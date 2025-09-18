@@ -4,6 +4,7 @@ import asyncio
 from typing import List, Dict, Any, Optional, Tuple 
 from fastapi import FastAPI, HTTPException, Query
 from fastmcp import Client  # FastMCP 서버와 연결하기 위한 Client
+from schemas.requests import CallToolRequest 
 
 # -------------------------
 # MCP 서버 URL 목록
@@ -18,7 +19,6 @@ SERVERS: Dict[str, str] = {
 }
 
 app = FastAPI(title="MCP Server Manager API", version="1.0.0")
-
 
 # =========================
 # DEF: 서버 상태 확인
@@ -155,6 +155,83 @@ async def get_multiple_server_tools(server_names: List[str] = Query(default=["ca
     }
 
 
+# -------------------------
+# API: 특정 서버의 특정 tool 호출
+# -------------------------
+@app.post("/tools/call")
+async def call_tool_endpoint(req: CallToolRequest):
+    """
+    특정 MCP 서버의 특정 도구(tool)를 호출합니다.
+
+    Request body 예:
+    {
+      "server": "calculator",
+      "tool": "add",
+      "args": {"a": 2, "b": 3},
+      "timeout": 5.0
+    }
+
+    {
+    "server": "library",
+    "tool": "search_by_year",
+    "args": {"year":2023},
+    "timeout": 5.0
+    }
+
+    {
+    "server": "news",
+    "tool": "search_by_category",
+    "args": {"category": "IT"},
+    "timeout": 5.0
+    }
+
+    동작:
+    - server가 정의되어 있지 않으면 404 반환
+    - Client에 연결하여 client.call_tool(tool, args) 실행
+    - 결과 객체에서 가능한 필드(data, content)를 안전히 반환
+    """
+    server_name = req.server
+    tool_name = req.tool
+    args = req.args or {}
+    timeout = req.timeout
+
+    # 서버 이름 검증
+    if server_name not in SERVERS:
+        raise HTTPException(status_code=404, detail=f"Unknown server '{server_name}'")
+
+    base_url = SERVERS[server_name]
+
+    # Client 연결 및 tool 호출
+    try:
+        # timeout  전달
+        client_kwargs = {"timeout": timeout} if timeout is not None else {}
+
+        async with Client(base_url, **client_kwargs) as client:
+
+            call_result = await client.call_tool(tool_name, args or {})
+            result_payload = {}
+            
+            # fastmcp 버전에 따라 상이한 attr 처리
+            if hasattr(call_result, "data"):
+                try:
+                    result_payload["data"] = call_result.data
+                except Exception:
+                    result_payload["data"] = None
+
+            if hasattr(call_result, "content"):
+                try:
+                    result_payload["content"] = call_result.content
+                except Exception:
+                    result_payload["content"] = None
+
+            raw_summary = repr(call_result) # repr는 디버깅용
+
+            return {"ok": True, "server": server_name, "tool": tool_name, "result": result_payload, "raw": raw_summary}
+
+    except Exception as e:
+        # 호출 실패 503
+        raise HTTPException(status_code=503, detail=f"Tool call failed: {e}")
+    
 # =========================
 # 실행용 main
 # uvicorn mcp_manager:app --host 0.0.0.0 --port 8080 --reload
